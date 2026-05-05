@@ -24,23 +24,52 @@ function monthKey(year: number, month: number): number {
 }
 
 /**
- * Fecha meses passados: grava extrato (total + pago) e redefine status das
- * despesas daquele mês para EM_ABERTO. Idempotente por usuário/mês.
+ * Fecha meses passados: grava extrato (total + pago) e replica despesas para
+ * o mês seguinte em EM_ABERTO, preservando o status histórico do mês fechado.
+ * Idempotente por usuário/mês e por despesa de origem.
  */
 async function closeMonthIfNeeded(
   userOid: mongoose.Types.ObjectId,
   year: number,
   month: number
 ): Promise<void> {
+  const expenses = await Expense.find({ userId: userOid, year, month }).lean();
+  if (expenses.length === 0) return;
+
+  const next = addOneMonth(year, month);
+  await Expense.bulkWrite(
+    expenses.map((e) => ({
+      updateOne: {
+        filter: {
+          userId: userOid,
+          year: next.year,
+          month: next.month,
+          rolloverSourceExpenseId: e._id,
+        },
+        update: {
+          $setOnInsert: {
+            userId: userOid,
+            title: e.title,
+            amount: e.amount,
+            status: "EM_ABERTO",
+            year: next.year,
+            month: next.month,
+            rolloverSourceExpenseId: e._id,
+            rolloverSourceYear: year,
+            rolloverSourceMonth: month,
+          },
+        },
+        upsert: true,
+      },
+    }))
+  );
+
   const existing = await MonthlyStatement.findOne({
     userId: userOid,
     year,
     month,
   }).lean();
   if (existing) return;
-
-  const expenses = await Expense.find({ userId: userOid, year, month }).lean();
-  if (expenses.length === 0) return;
 
   let totalExpenses = 0;
   let totalPaid = 0;
@@ -56,11 +85,6 @@ async function closeMonthIfNeeded(
     totalExpenses,
     totalPaid,
   });
-
-  await Expense.updateMany(
-    { userId: userOid, year, month },
-    { $set: { status: "EM_ABERTO" } }
-  );
 }
 
 /**
@@ -97,14 +121,17 @@ export async function ensureMonthlyRollover(userId: string): Promise<void> {
     m = first.month;
   }
 
-  if (monthKey(y, m) > monthKey(end.year, end.month)) return;
-
-  let cyIter = y;
-  let cmIter = m;
-  while (monthKey(cyIter, cmIter) <= monthKey(end.year, end.month)) {
-    await closeMonthIfNeeded(oid, cyIter, cmIter);
-    const n = addOneMonth(cyIter, cmIter);
-    cyIter = n.year;
-    cmIter = n.month;
+  if (monthKey(y, m) <= monthKey(end.year, end.month)) {
+    let cyIter = y;
+    let cmIter = m;
+    while (monthKey(cyIter, cmIter) <= monthKey(end.year, end.month)) {
+      await closeMonthIfNeeded(oid, cyIter, cmIter);
+      const n = addOneMonth(cyIter, cmIter);
+      cyIter = n.year;
+      cmIter = n.month;
+    }
   }
+
+  const previousMonth = prevCalendarMonth(cy, cm);
+  await closeMonthIfNeeded(oid, previousMonth.year, previousMonth.month);
 }

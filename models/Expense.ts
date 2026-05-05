@@ -22,11 +22,22 @@ const expenseSchema = new Schema(
     },
     year: { type: Number, required: true, min: 2000, max: 2100 },
     month: { type: Number, required: true, min: 1, max: 12 },
+    rolloverSourceExpenseId: {
+      type: Schema.Types.ObjectId,
+      ref: "Expense",
+      required: false,
+    },
+    rolloverSourceYear: { type: Number, required: false, min: 2000, max: 2100 },
+    rolloverSourceMonth: { type: Number, required: false, min: 1, max: 12 },
   },
   { timestamps: true }
 );
 
 expenseSchema.index({ userId: 1, year: 1, month: 1 });
+expenseSchema.index(
+  { userId: 1, year: 1, month: 1, rolloverSourceExpenseId: 1 },
+  { unique: true, sparse: true }
+);
 
 export type ExpenseDoc = InferSchemaType<typeof expenseSchema> & {
   _id: mongoose.Types.ObjectId;
